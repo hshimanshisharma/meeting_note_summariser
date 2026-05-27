@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block title %}History — Meeting Notes AI{% endblock %}
+
+{% block content %}
+<header class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4">
+  <div>
+    <h1 class="h3 fw-semibold mb-1">Summary history</h1>
+    <p class="text-muted mb-0">Your saved summaries</p>
+  </div>
+  <a href="{{ url_for('index') }}" class="btn btn-primary btn-sm">New summary</a>
+</header>
+
+{% if summaries %}
+<div class="row g-4">
+  {% for item in summaries %}
+  <div class="col-12">
+    <div class="card shadow-sm border-0 h-100">
+      <div class="card-header bg-white d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div>
+          <span class="badge text-bg-secondary">
+            {{ summary_styles.get(item['style'], item['style'] or 'Summary') }}
+          </span>
+          <small class="text-muted ms-2">{{ item['timestamp'][:19].replace('T', ' ') }} UTC</small>
+        </div>
+        <button type="button" class="btn btn-outline-secondary btn-sm copy-summary">
+          Copy summary
+        </button>
+      </div>
+      <div class="card-body">
+        <h3 class="h6 text-muted">Original notes</h3>
+        <p class="small text-break mb-3" style="white-space: pre-wrap; max-height: 8rem; overflow-y: auto;">
+          {{ item['original_text'][:500] }}{% if item['original_text']|length > 500 %}…{% endif %}
+        </p>
+        <h3 class="h6 text-muted">Summary</h3>
+        <pre class="d-none summary-source">{{ item['summary_text'] }}</pre>
+        <p class="mb-0 text-break" style="white-space: pre-wrap;">{{ item['summary_text'] }}</p>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card shadow-sm border-0">
+  <div class="card-body text-center py-5 text-muted">
+    <p class="mb-3">No saved summaries yet.</p>
+    <a href="{{ url_for('index') }}" class="btn btn-primary">Create your first summary</a>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.querySelectorAll(".copy-summary").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const source = button.closest(".card").querySelector(".summary-source");
+      const text = source ? source.textContent : "";
+      try {
+        await navigator.clipboard.writeText(text);
+        const original = button.textContent;
+        button.textContent = "Copied!";
+        setTimeout(() => { button.textContent = original; }, 2000);
+      } catch (err) {
+        button.textContent = "Failed";
+        setTimeout(() => { button.textContent = "Copy summary"; }, 2000);
+      }
+    });
+  });
+</script>
+{% endblock %}

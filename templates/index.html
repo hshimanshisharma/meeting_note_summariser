@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+
+{% block content %}
+<header class="text-center mb-4">
+  <h1 class="display-6 fw-semibold">AI Meeting Notes Summariser</h1>
+  <p class="text-muted mb-0">
+    Provide either meeting notes or upload audio — summaries run locally with Ollama Mistral.
+    {% if enable_auth and not current_user.is_authenticated %}
+    <a href="{{ url_for('login') }}">Log in</a> to save your history.
+    {% endif %}
+  </p>
+</header>
+
+<div class="card shadow-sm border-0 mb-4">
+  <div class="card-body p-4">
+    <form id="summarize-form" action="{{ url_for('summarize') }}" method="post" enctype="multipart/form-data">
+      <fieldset class="mb-4">
+        <legend class="form-label fw-medium mb-2">Summary style</legend>
+        <div class="d-flex flex-wrap gap-3">
+          {% for key, label in summary_styles.items() %}
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="style" id="style_{{ key }}"
+                   value="{{ key }}" {% if loop.first %}checked{% endif %}>
+            <label class="form-check-label" for="style_{{ key }}">{{ label }}</label>
+          </div>
+          {% endfor %}
+        </div>
+      </fieldset>
+
+      <p class="alert alert-info py-2 small mb-4" role="note">
+        Provide <strong>either</strong> meeting notes <strong>or</strong> upload audio (.mp3, .wav, .mp4, .m4a).
+        If both are provided, meeting notes are used.
+      </p>
+
+      <div class="mb-3">
+        <label for="meeting_notes" class="form-label fw-medium">Meeting notes</label>
+        <textarea class="form-control" id="meeting_notes" name="meeting_notes" rows="10"
+                  placeholder="Paste your meeting notes here..."></textarea>
+      </div>
+
+      <div class="mb-4">
+        <label for="audio_file" class="form-label fw-medium">Audio / video upload</label>
+        <input class="form-control" type="file" id="audio_file" name="audio_file"
+               accept=".mp3,.wav,.mp4,.m4a,audio/*,video/mp4">
+        <div class="form-text">Transcribed with Whisper, then summarised.</div>
+      </div>
+
+      <button type="submit" class="btn btn-primary px-4" id="submit-btn">Summarize</button>
+    </form>
+  </div>
+</div>
+
+<div id="loading" class="mb-4" style="display: none;">
+  <div class="progress">
+    <div class="progress-bar progress-bar-striped progress-bar-animated"
+         role="progressbar" style="width: 100%" id="loading-bar">
+      <span id="loading-text">Generating summary...</span>
+    </div>
+  </div>
+</div>
+
+<section id="results" class="card shadow-sm border-0 d-none" aria-live="polite">
+  <div class="card-header bg-white border-bottom d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <div>
+      <h2 class="h5 mb-0">Summary</h2>
+      <small id="results-style" class="text-muted"></small>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+      <span class="badge text-bg-primary">Mistral</span>
+      <button type="button" class="btn btn-outline-secondary btn-sm" id="copy-btn" title="Copy summary">
+        Copy
+      </button>
+    </div>
+  </div>
+  <div class="card-body">
+    <p id="summary-text" class="mb-0 text-break" style="white-space: pre-wrap;"></p>
+    <p id="saved-hint" class="form-text mt-3 mb-0 d-none text-success"></p>
+  </div>
+</section>
+
+<div id="error-card" class="card shadow-sm border-0 border-warning d-none" aria-live="polite">
+  <div class="card-body">
+    <div class="alert alert-warning mb-0" role="alert" id="error-message"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const form = document.getElementById("summarize-form");
+  const loading = document.getElementById("loading");
+  const loadingText = document.getElementById("loading-text");
+  const results = document.getElementById("results");
+  const errorCard = document.getElementById("error-card");
+  const errorMessage = document.getElementById("error-message");
+  const summaryText = document.getElementById("summary-text");
+  const resultsStyle = document.getElementById("results-style");
+  const savedHint = document.getElementById("saved-hint");
+  const copyBtn = document.getElementById("copy-btn");
+  const meetingNotes = document.getElementById("meeting_notes");
+  const audioInput = document.getElementById("audio_file");
+  const submitBtn = document.getElementById("submit-btn");
+
+  const styleLabels = {{ summary_styles | tojson }};
+
+  function hideAllResults() {
+    results.classList.add("d-none");
+    errorCard.classList.add("d-none");
+  }
+
+  function showError(message) {
+    hideAllResults();
+    errorMessage.textContent = message;
+    errorCard.classList.remove("d-none");
+  }
+
+  function showSummary(data) {
+    hideAllResults();
+    summaryText.textContent = data.summary;
+    resultsStyle.textContent = data.style_label || styleLabels[data.style] || "";
+    savedHint.classList.toggle("d-none", !data.saved);
+    savedHint.textContent = data.saved
+      ? "Saved to your history."
+      : "";
+    results.classList.remove("d-none");
+  }
+
+  copyBtn.addEventListener("click", async () => {
+    const text = summaryText.textContent;
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      copyBtn.textContent = "Copied!";
+      setTimeout(() => { copyBtn.textContent = "Copy"; }, 2000);
+    } catch (err) {
+      copyBtn.textContent = "Failed";
+      setTimeout(() => { copyBtn.textContent = "Copy"; }, 2000);
+    }
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    const hasAudio = audioInput.files && audioInput.files.length > 0;
+    const hasNotes = meetingNotes.value.trim().length > 0;
+
+    if (!hasAudio && !hasNotes) {
+      meetingNotes.classList.add("is-invalid");
+      audioInput.classList.add("is-invalid");
+      showError("Please provide either meeting notes or audio.");
+      return;
+    }
+
+    const useAudioOnly = hasAudio && !hasNotes;
+    loadingText.textContent = useAudioOnly
+      ? "Transcribing audio and generating summary..."
+      : "Generating summary...";
+    loading.style.display = "block";
+    hideAllResults();
+    meetingNotes.classList.remove("is-invalid");
+    audioInput.classList.remove("is-invalid");
+    submitBtn.disabled = true;
+
+    const formData = new FormData();
+    formData.append(
+      "style",
+      form.querySelector('input[name="style"]:checked').value
+    );
+    if (hasNotes) {
+      formData.append("meeting_notes", meetingNotes.value.trim());
+    }
+    if (hasAudio) {
+      const file = audioInput.files[0];
+      formData.append("audio_file", file, file.name);
+    }
+
+    try {
+      const response = await fetch(form.action, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || data.error) {
+        if (useAudioOnly) {
+          audioInput.classList.add("is-invalid");
+        } else if (hasNotes) {
+          meetingNotes.classList.add("is-invalid");
+        } else {
+          meetingNotes.classList.add("is-invalid");
+          audioInput.classList.add("is-invalid");
+        }
+        showError(data.error || "Something went wrong. Please try again.");
+      } else {
+        showSummary(data);
+      }
+    } catch (error) {
+      showError("Network error. Please check your connection and try again.");
+    } finally {
+      loading.style.display = "none";
+      submitBtn.disabled = false;
+    }
+  });
+</script>
+{% endblock %}
